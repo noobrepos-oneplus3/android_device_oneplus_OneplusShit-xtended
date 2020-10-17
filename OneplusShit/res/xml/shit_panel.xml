@@ -132,5 +132,21 @@
             android:summary="@string/hbm_autobrightness_threshold_summary"
             app:iconSpaceReserved="false"
             android:dependency="hbm" />
+            
+        <PreferenceCategory
+        android:key="doze"
+        android:title="@string/doze_panel_title">
+
+        <Preference
+            android:key="advanced_doze_settings"
+            android:persistent="false"
+            android:title="@string/doze_settings_title"
+            android:summary="@string/doze_settings_summary">
+            <intent
+                    android:action="android.intent.action.MAIN"
+                    android:targetPackage="com.custom.ambient.display"
+                    android:targetClass="com.custom.ambient.display.DozeSettings" />
+        </Preference>
+    </PreferenceCategory>
 
 </PreferenceScreen>
