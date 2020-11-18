@@ -43,7 +43,6 @@ import android.view.KeyEvent;
 import com.android.internal.os.DeviceKeyHandler;
 import com.android.internal.util.ArrayUtils;
 
-import lineageos.providers.LineageSettings;
 
 public class KeyHandler implements DeviceKeyHandler {
 
