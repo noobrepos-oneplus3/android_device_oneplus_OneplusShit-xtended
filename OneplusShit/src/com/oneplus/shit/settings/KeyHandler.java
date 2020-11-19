@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.lineageos.settings.device;
+package org.lineageos.device.DeviceSettings;
 
 import android.Manifest;
 import android.app.NotificationManager;
@@ -33,6 +33,7 @@ import android.os.Message;
 import android.os.PowerManager;
 import android.os.PowerManager.WakeLock;
 import android.os.SystemClock;
+import android.os.SystemProperties;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.provider.Settings;
@@ -40,40 +41,37 @@ import android.util.Log;
 import android.util.SparseIntArray;
 import android.view.KeyEvent;
 
-import com.android.internal.os.DeviceKeyHandler;
+import com.android.internal.os.AltDeviceKeyHandler;
 import com.android.internal.util.ArrayUtils;
 
+import org.lineageos.device.DeviceSettings.Constants;
 
-public class KeyHandler implements DeviceKeyHandler {
+public class KeyHandler implements AltDeviceKeyHandler {
 
     private static final String TAG = KeyHandler.class.getSimpleName();
     private static final int GESTURE_REQUEST = 1;
+    private static String FPNAV_ENABLED_PROP = "sys.fpnav.enabled";
 
-    private static final int ZEN_MODE_VIBRATION = 4;
-
-    // Supported scancodes
-    private static final int FLIP_CAMERA_SCANCODE = 249;
-    private static final int MODE_TOTAL_SILENCE = 600;
-    private static final int MODE_VIBRATION = 601;
-    private static final int MODE_PRIORITY_ONLY = 602;
-    private static final int MODE_NONE = 603;
-
-    private static final int GESTURE_WAKELOCK_DURATION = 3000;
-
-    private static final SparseIntArray sSupportedSliderModes = new SparseIntArray();
+    private static final SparseIntArray sSupportedSliderZenModes = new SparseIntArray();
+    private static final SparseIntArray sSupportedSliderRingModes = new SparseIntArray();
     static {
-        sSupportedSliderModes.put(MODE_TOTAL_SILENCE, Settings.Global.ZEN_MODE_NO_INTERRUPTIONS);
-        sSupportedSliderModes.put(MODE_VIBRATION, ZEN_MODE_VIBRATION);
-        sSupportedSliderModes.put(MODE_PRIORITY_ONLY,
-                Settings.Global.ZEN_MODE_IMPORTANT_INTERRUPTIONS);
-        sSupportedSliderModes.put(MODE_NONE, Settings.Global.ZEN_MODE_OFF);
+        sSupportedSliderZenModes.put(Constants.KEY_VALUE_TOTAL_SILENCE, Settings.Global.ZEN_MODE_NO_INTERRUPTIONS);
+        sSupportedSliderZenModes.put(Constants.KEY_VALUE_SILENT, Settings.Global.ZEN_MODE_OFF);
+        sSupportedSliderZenModes.put(Constants.KEY_VALUE_PRIORTY_ONLY, Settings.Global.ZEN_MODE_IMPORTANT_INTERRUPTIONS);
+        sSupportedSliderZenModes.put(Constants.KEY_VALUE_VIBRATE, Settings.Global.ZEN_MODE_OFF);
+        sSupportedSliderZenModes.put(Constants.KEY_VALUE_NORMAL, Settings.Global.ZEN_MODE_OFF);
+
+        sSupportedSliderRingModes.put(Constants.KEY_VALUE_TOTAL_SILENCE, AudioManager.RINGER_MODE_NORMAL);
+        sSupportedSliderRingModes.put(Constants.KEY_VALUE_SILENT, AudioManager.RINGER_MODE_SILENT);
+        sSupportedSliderRingModes.put(Constants.KEY_VALUE_PRIORTY_ONLY, AudioManager.RINGER_MODE_NORMAL);
+        sSupportedSliderRingModes.put(Constants.KEY_VALUE_VIBRATE, AudioManager.RINGER_MODE_VIBRATE);
+        sSupportedSliderRingModes.put(Constants.KEY_VALUE_NORMAL, AudioManager.RINGER_MODE_NORMAL);
     }
 
     private final Context mContext;
-    private final AudioManager mAudioManager;
     private final PowerManager mPowerManager;
     private final NotificationManager mNotificationManager;
-    private EventHandler mEventHandler;
+    private final AudioManager mAudioManager;
     private SensorManager mSensorManager;
     private Sensor mProximitySensor;
     private Vibrator mVibrator;
@@ -84,43 +82,16 @@ public class KeyHandler implements DeviceKeyHandler {
 
     public KeyHandler(Context context) {
         mContext = context;
-        mAudioManager = context.getSystemService(AudioManager.class);
-        mPowerManager = context.getSystemService(PowerManager.class);
-        mNotificationManager = context.getSystemService(NotificationManager.class);
-        mEventHandler = new EventHandler();
+        mPowerManager = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+        mNotificationManager
+                = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        mAudioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
         mGestureWakeLock = mPowerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,
                 "GestureWakeLock");
 
-        final Resources resources = mContext.getResources();
-        mProximityTimeOut = resources.getInteger(
-                org.lineageos.platform.internal.R.integer.config_proximityCheckTimeout);
-        mProximityWakeSupported = resources.getBoolean(
-                org.lineageos.platform.internal.R.bool.config_proximityCheckOnWake);
-
-        if (mProximityWakeSupported) {
-            mSensorManager = context.getSystemService(SensorManager.class);
-            mProximitySensor = mSensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY);
-            mProximityWakeLock = mPowerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,
-                    "ProximityWakeLock");
-        }
-
-        mVibrator = context.getSystemService(Vibrator.class);
+        mVibrator = (Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
         if (mVibrator == null || !mVibrator.hasVibrator()) {
             mVibrator = null;
-        }
-    }
-
-    private class EventHandler extends Handler {
-        @Override
-        public void handleMessage(Message msg) {
-            if (msg.arg1 == FLIP_CAMERA_SCANCODE) {
-                mGestureWakeLock.acquire(GESTURE_WAKELOCK_DURATION);
-
-                Intent intent = new Intent(
-                        lineageos.content.Intent.ACTION_SCREEN_CAMERA_GESTURE);
-                mContext.sendBroadcast(intent, Manifest.permission.STATUS_BAR_SERVICE);
-                doHapticFeedback();
-            }
         }
     }
 
@@ -131,90 +102,37 @@ public class KeyHandler implements DeviceKeyHandler {
 
     public KeyEvent handleKeyEvent(KeyEvent event) {
         int scanCode = event.getScanCode();
-        boolean isKeySupported = scanCode == FLIP_CAMERA_SCANCODE;
-        boolean isSliderModeSupported = sSupportedSliderModes.indexOfKey(scanCode) >= 0;
-        if (!isKeySupported && !isSliderModeSupported) {
-            return event;
-        }
+        String keyCode = Constants.sKeyMap.get(scanCode);
+        int keyCodeValue = Constants.getPreferenceInt(mContext, keyCode);
 
         if (!hasSetupCompleted()) {
             return event;
         }
 
-        // We only want ACTION_UP event, except FLIP_CAMERA_SCANCODE
-        if (scanCode == FLIP_CAMERA_SCANCODE) {
-            if (event.getAction() != KeyEvent.ACTION_DOWN) {
-                return null;
-            }
-        } else if (event.getAction() != KeyEvent.ACTION_UP) {
+        // We only want ACTION_UP event
+        if (event.getAction() != KeyEvent.ACTION_UP) {
             return null;
         }
 
-        if (isSliderModeSupported) {
-            if (scanCode == MODE_VIBRATION) {
-                mNotificationManager.setZenMode(Settings.Global.ZEN_MODE_OFF, null, TAG);
-                mAudioManager.setRingerModeInternal(AudioManager.RINGER_MODE_VIBRATE);
-            } else {
-                mAudioManager.setRingerModeInternal(AudioManager.RINGER_MODE_NORMAL);
-                mNotificationManager.setZenMode(sSupportedSliderModes.get(scanCode), null, TAG);
-            }
-            doHapticFeedback();
-        } else if (!mEventHandler.hasMessages(GESTURE_REQUEST)) {
-            Message msg = getMessageForKeyEvent(scanCode);
-            boolean defaultProximity = mContext.getResources().getBoolean(
-                org.lineageos.platform.internal.R.bool.config_proximityCheckOnWakeEnabledByDefault);
-            boolean proximityWakeCheckEnabled = LineageSettings.System.getInt(
-                    mContext.getContentResolver(), LineageSettings.System.PROXIMITY_ON_WAKE,
-                    defaultProximity ? 1 : 0) == 1;
-            if (mProximityWakeSupported && proximityWakeCheckEnabled && mProximitySensor != null) {
-                mEventHandler.sendMessageDelayed(msg, mProximityTimeOut);
-                processEvent(scanCode);
-            } else {
-                mEventHandler.sendMessage(msg);
-            }
-        }
+        mAudioManager.setRingerModeInternal(sSupportedSliderRingModes.get(keyCodeValue));
+        mNotificationManager.setZenMode(sSupportedSliderZenModes.get(keyCodeValue), null, TAG);
+        doHapticFeedback();
         return null;
     }
 
-    private Message getMessageForKeyEvent(int scancode) {
-        Message msg = mEventHandler.obtainMessage(GESTURE_REQUEST);
-        msg.arg1 = scancode;
-        return msg;
-    }
-
-    private void processEvent(final int scancode) {
-        mProximityWakeLock.acquire();
-        mSensorManager.registerListener(new SensorEventListener() {
-            @Override
-            public void onSensorChanged(SensorEvent event) {
-                mProximityWakeLock.release();
-                mSensorManager.unregisterListener(this);
-                if (!mEventHandler.hasMessages(GESTURE_REQUEST)) {
-                    // The sensor took to long, ignoring.
-                    return;
-                }
-                mEventHandler.removeMessages(GESTURE_REQUEST);
-                if (event.values[0] == mProximitySensor.getMaximumRange()) {
-                    Message msg = getMessageForKeyEvent(scancode);
-                    mEventHandler.sendMessage(msg);
-                }
-            }
-
-            @Override
-            public void onAccuracyChanged(Sensor sensor, int accuracy) {}
-
-        }, mProximitySensor, SensorManager.SENSOR_DELAY_FASTEST);
-    }
-
     private void doHapticFeedback() {
-        if (mVibrator == null) {
-            return;
-        }
-        boolean enabled = LineageSettings.System.getInt(mContext.getContentResolver(),
-                LineageSettings.System.TOUCHSCREEN_GESTURE_HAPTIC_FEEDBACK, 1) != 0;
-        if (enabled) {
+        if (mVibrator != null && mVibrator.hasVibrator()) {
             mVibrator.vibrate(VibrationEffect.createOneShot(50,
                     VibrationEffect.DEFAULT_AMPLITUDE));
         }
     }
+
+    public void handleNavbarToggle(boolean enabled) {
+        SystemProperties.set(FPNAV_ENABLED_PROP, enabled ? "0" : "1");
+    }
+
+    public boolean canHandleKeyEvent(KeyEvent event) {
+        return false;
+        }
+
 }
